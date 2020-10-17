@@ -1,2 +1,2 @@
-## 0.2.2
-- Support analyzer 0.39.0
+## 0.3.0
+- Support analyzer 0.40.x
