@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 import 'package:analyzer/dart/element/element.dart' as analyzer;
-import 'package:analyzer/dart/element/type.dart' as analyzer;
+import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/diagnostic/diagnostic.dart' as analyzer;
 import 'package:analyzer/error/error.dart' as analyzer;
 import 'package:analyzer/exception/exception.dart' as analyzer;
@@ -11,12 +11,7 @@ import 'package:analyzer/source/error_processor.dart' as analyzer;
 import 'package:analyzer/source/line_info.dart' as analyzer;
 import 'package:analyzer/src/generated/engine.dart' as analyzer;
 import 'package:analyzer/src/generated/source.dart' as analyzer;
-import 'package:analyzer/src/generated/utilities_dart.dart' as analyzer;
 import 'package:analyzer_plugin_fork/protocol/protocol_common.dart' as plugin;
-import 'package:analyzer_plugin_fork/protocol/protocol_constants.dart'
-    as plugin;
-import 'package:analyzer_plugin_fork/protocol/protocol_generated.dart'
-    as plugin;
 
 /// An object used to convert between objects defined by the 'analyzer' package
 /// and those defined by the plugin protocol.
@@ -116,19 +111,22 @@ class AnalyzerConverter {
   plugin.Element convertElement(analyzer.Element element) {
     var kind = _convertElementToElementKind(element);
     return plugin.Element(
-        kind,
-        element.displayName,
-        plugin.Element.makeFlags(
-            isPrivate: element.isPrivate,
-            isDeprecated: element.hasDeprecated,
-            isAbstract: _isAbstract(element),
-            isConst: _isConst(element),
-            isFinal: _isFinal(element),
-            isStatic: _isStatic(element)),
-        location: locationFromElement(element),
-        typeParameters: _getTypeParametersString(element),
-        parameters: _getParametersString(element),
-        returnType: _getReturnTypeString(element));
+      kind,
+      element.displayName,
+      plugin.Element.makeFlags(
+        isPrivate: element.isPrivate,
+        isDeprecated: element.hasDeprecated,
+        isAbstract: _isAbstract(element),
+        isConst: _isConst(element),
+        isFinal: _isFinal(element),
+        isStatic: _isStatic(element),
+      ),
+      location: locationFromElement(element),
+      typeParameters: _getTypeParametersString(element),
+      aliasedType: _getAliasedTypeString(element),
+      parameters: _getParametersString(element),
+      returnType: _getReturnTypeString(element),
+    );
   }
 
   /// Convert the element [kind] from the 'analyzer' package to an element kind
@@ -170,6 +168,8 @@ class AnalyzerConverter {
       return plugin.ElementKind.SETTER;
     } else if (kind == analyzer.ElementKind.TOP_LEVEL_VARIABLE) {
       return plugin.ElementKind.TOP_LEVEL_VARIABLE;
+    } else if (kind == analyzer.ElementKind.TYPE_ALIAS) {
+      return plugin.ElementKind.TYPE_ALIAS;
     } else if (kind == analyzer.ElementKind.TYPE_PARAMETER) {
       return plugin.ElementKind.TYPE_PARAMETER;
     }
@@ -227,6 +227,14 @@ class AnalyzerConverter {
     return convertElementKind(element.kind);
   }
 
+  String _getAliasedTypeString(analyzer.Element element) {
+    if (element is analyzer.TypeAliasElement) {
+      var aliasedType = element.aliasedType;
+      return aliasedType.getDisplayString(withNullability: false);
+    }
+    return null;
+  }
+
   /// Return a textual representation of the parameters of the given [element],
   /// or `null` if the element does not have any parameters.
   String _getParametersString(analyzer.Element element) {
@@ -239,8 +247,13 @@ class AnalyzerConverter {
         return null;
       }
       parameters = element.parameters;
-    } else if (element is analyzer.FunctionTypeAliasElement) {
-      parameters = element.function.parameters;
+    } else if (element is analyzer.TypeAliasElement) {
+      var aliasedElement = element.aliasedElement;
+      if (aliasedElement is analyzer.GenericFunctionTypeElement) {
+        parameters = aliasedElement.parameters;
+      } else {
+        return null;
+      }
     } else {
       return null;
     }
@@ -281,9 +294,12 @@ class AnalyzerConverter {
       return type != null
           ? type.getDisplayString(withNullability: false)
           : 'dynamic';
-    } else if (element is analyzer.FunctionTypeAliasElement) {
-      var returnType = element.function.returnType;
-      return returnType.getDisplayString(withNullability: false);
+    } else if (element is analyzer.TypeAliasElement) {
+      var aliasedType = element.aliasedType;
+      if (aliasedType is FunctionType) {
+        var returnType = aliasedType.returnType;
+        return returnType.getDisplayString(withNullability: false);
+      }
     }
     return null;
   }

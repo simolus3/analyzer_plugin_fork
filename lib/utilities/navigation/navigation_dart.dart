@@ -7,12 +7,12 @@ import 'package:analyzer/dart/ast/token.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/file_system/file_system.dart';
+import 'package:analyzer/src/dart/ast/extensions.dart';
 import 'package:analyzer/src/dart/ast/utilities.dart';
 import 'package:analyzer/src/dart/element/element.dart';
 import 'package:analyzer_plugin_fork/protocol/protocol_common.dart' as protocol;
 import 'package:analyzer_plugin_fork/utilities/analyzer_converter.dart';
 import 'package:analyzer_plugin_fork/utilities/navigation/navigation.dart';
-import 'package:analyzer_plugin_fork/src/analyzer_backports.dart';
 
 NavigationCollector computeDartNavigation(
     ResourceProvider resourceProvider,
@@ -277,7 +277,7 @@ class _DartNavigationComputerVisitor extends RecursiveAstVisitor<void> {
 
   @override
   void visitExportDirective(ExportDirective node) {
-    var exportElement = node.element as ExportElement;
+    var exportElement = node.element;
     if (exportElement != null) {
       Element libraryElement = exportElement.exportedLibrary;
       _addUriDirectiveRegion(node, libraryElement);
@@ -287,7 +287,7 @@ class _DartNavigationComputerVisitor extends RecursiveAstVisitor<void> {
 
   @override
   void visitImportDirective(ImportDirective node) {
-    var importElement = node.element as ImportElement;
+    var importElement = node.element;
     if (importElement != null) {
       Element libraryElement = importElement.importedLibrary;
       _addUriDirectiveRegion(node, libraryElement);

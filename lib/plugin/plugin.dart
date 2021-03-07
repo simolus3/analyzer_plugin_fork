@@ -4,12 +4,12 @@
 
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/file_system/file_system.dart';
+import 'package:analyzer/file_system/overlay_file_system.dart';
 import 'package:analyzer/file_system/physical_file_system.dart';
 import 'package:analyzer/src/dart/analysis/byte_store.dart';
 import 'package:analyzer/src/dart/analysis/driver.dart'
     show AnalysisDriver, AnalysisDriverGeneric, AnalysisDriverScheduler;
 import 'package:analyzer/src/dart/analysis/file_byte_store.dart';
-import 'package:analyzer/src/dart/analysis/file_state.dart';
 import 'package:analyzer/src/dart/analysis/performance_logger.dart';
 import 'package:analyzer/src/generated/sdk.dart';
 import 'package:analyzer_plugin_fork/channel/channel.dart';
@@ -36,7 +36,10 @@ abstract class ServerPlugin {
   PluginCommunicationChannel _channel;
 
   /// The resource provider used to access the file system.
-  final ResourceProvider resourceProvider;
+  final OverlayResourceProvider resourceProvider;
+
+  /// The next modification stamp for a changed file in the [resourceProvider].
+  int _overlayModificationStamp = 0;
 
   /// The object used to manage analysis subscriptions.
   final SubscriptionManager subscriptionManager = SubscriptionManager();
@@ -60,14 +63,12 @@ abstract class ServerPlugin {
   /// The SDK manager used to manage SDKs.
   DartSdkManager _sdkManager;
 
-  /// The file content overlay used by any analysis drivers that are created.
-  final FileContentOverlay fileContentOverlay = FileContentOverlay();
-
   /// Initialize a newly created analysis server plugin. If a resource [provider]
   /// is given, then it will be used to access the file system. Otherwise a
   /// resource provider that accesses the physical file system will be used.
   ServerPlugin(ResourceProvider provider)
-      : resourceProvider = provider ?? PhysicalResourceProvider.INSTANCE {
+      : resourceProvider = OverlayResourceProvider(
+            provider ?? PhysicalResourceProvider.INSTANCE) {
     analysisDriverScheduler = AnalysisDriverScheduler(performanceLog);
     analysisDriverScheduler.start();
   }
@@ -95,7 +96,8 @@ abstract class ServerPlugin {
   /// Return the SDK manager used to manage SDKs.
   DartSdkManager get sdkManager => _sdkManager;
 
-  /// Return the version number of this plugin, encoded as a string.
+  /// Return the version number of the plugin spec required by this plugin,
+  /// encoded as a string.
   String get version;
 
   /// Handle the fact that the file with the given [path] has been modified.
@@ -153,8 +155,6 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] is the file cannot be analyzed or if the driver
   /// associated with the file is not an [AnalysisDriver].
   Future<ResolvedUnitResult> getResolvedUnitResult(String path) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     var driver = driverForPath(path);
     if (driver is! AnalysisDriver) {
       // Return an error from the request.
@@ -176,8 +176,6 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<AnalysisGetNavigationResult> handleAnalysisGetNavigation(
       AnalysisGetNavigationParams params) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     return AnalysisGetNavigationResult(
         <String>[], <NavigationTarget>[], <NavigationRegion>[]);
   }
@@ -187,8 +185,6 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<AnalysisHandleWatchEventsResult> handleAnalysisHandleWatchEvents(
       AnalysisHandleWatchEventsParams parameters) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     for (var event in parameters.events) {
       switch (event.type) {
         case WatchEventType.ADD:
@@ -213,8 +209,6 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<AnalysisSetContextRootsResult> handleAnalysisSetContextRoots(
       AnalysisSetContextRootsParams parameters) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     var contextRoots = parameters.roots;
     var oldRoots = driverMap.keys.toList();
     for (var contextRoot in contextRoots) {
@@ -244,8 +238,6 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<AnalysisSetPriorityFilesResult> handleAnalysisSetPriorityFiles(
       AnalysisSetPriorityFilesParams parameters) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     var files = parameters.files;
     var filesByDriver = <AnalysisDriverGeneric, List<String>>{};
     for (var file in files) {
@@ -269,8 +261,6 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<AnalysisSetSubscriptionsResult> handleAnalysisSetSubscriptions(
       AnalysisSetSubscriptionsParams parameters) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     var subscriptions = parameters.subscriptions;
     var newSubscriptions = subscriptionManager.setSubscriptions(subscriptions);
     sendNotificationsForSubscriptions(newSubscriptions);
@@ -284,15 +274,22 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<AnalysisUpdateContentResult> handleAnalysisUpdateContent(
       AnalysisUpdateContentParams parameters) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     Map<String, Object> files = parameters.files;
     files.forEach((String filePath, Object overlay) {
+      // Prepare the old overlay contents.
+      String oldContents;
+      try {
+        if (resourceProvider.hasOverlay(filePath)) {
+          var file = resourceProvider.getFile(filePath);
+          oldContents = file.readAsStringSync();
+        }
+      } catch (_) {}
+
+      // Prepare the new contents.
+      String newContents;
       if (overlay is AddContentOverlay) {
-        fileContentOverlay[filePath] = overlay.content;
+        newContents = overlay.content;
       } else if (overlay is ChangeContentOverlay) {
-        var oldContents = fileContentOverlay[filePath];
-        String newContents;
         if (oldContents == null) {
           // The server should only send a ChangeContentOverlay if there is
           // already an existing overlay for the source.
@@ -305,10 +302,20 @@ abstract class ServerPlugin {
           throw RequestFailure(
               RequestErrorFactory.invalidOverlayChangeInvalidEdit());
         }
-        fileContentOverlay[filePath] = newContents;
       } else if (overlay is RemoveContentOverlay) {
-        fileContentOverlay[filePath] = null;
+        newContents = null;
       }
+
+      if (newContents != null) {
+        resourceProvider.setOverlay(
+          filePath,
+          content: newContents,
+          modificationStamp: _overlayModificationStamp++,
+        );
+      } else {
+        resourceProvider.removeOverlay(filePath);
+      }
+
       contentChanged(filePath);
     });
     return AnalysisUpdateContentResult();
@@ -319,8 +326,6 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<CompletionGetSuggestionsResult> handleCompletionGetSuggestions(
       CompletionGetSuggestionsParams parameters) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     return CompletionGetSuggestionsResult(
         -1, -1, const <CompletionSuggestion>[]);
   }
@@ -330,8 +335,6 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<EditGetAssistsResult> handleEditGetAssists(
       EditGetAssistsParams parameters) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     return EditGetAssistsResult(const <PrioritizedSourceChange>[]);
   }
 
@@ -342,8 +345,6 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<EditGetAvailableRefactoringsResult> handleEditGetAvailableRefactorings(
       EditGetAvailableRefactoringsParams parameters) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     return EditGetAvailableRefactoringsResult(const <RefactoringKind>[]);
   }
 
@@ -352,8 +353,6 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<EditGetFixesResult> handleEditGetFixes(
       EditGetFixesParams parameters) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     return EditGetFixesResult(const <AnalysisErrorFixes>[]);
   }
 
@@ -362,8 +361,7 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<EditGetRefactoringResult> handleEditGetRefactoring(
       EditGetRefactoringParams parameters) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    return await null;
+    return null;
   }
 
   /// Handle a 'kythe.getKytheEntries' request.
@@ -371,8 +369,7 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<KytheGetKytheEntriesResult> handleKytheGetKytheEntries(
       KytheGetKytheEntriesParams parameters) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    return await null;
+    return null;
   }
 
   /// Handle a 'plugin.shutdown' request. Subclasses can override this method to
@@ -382,8 +379,6 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<PluginShutdownResult> handlePluginShutdown(
       PluginShutdownParams parameters) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     return PluginShutdownResult();
   }
 
@@ -392,8 +387,6 @@ abstract class ServerPlugin {
   /// Throw a [RequestFailure] if the request could not be handled.
   Future<PluginVersionCheckResult> handlePluginVersionCheck(
       PluginVersionCheckParams parameters) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     var byteStorePath = parameters.byteStorePath;
     var sdkPath = parameters.sdkPath;
     var versionString = parameters.version;
@@ -511,8 +504,6 @@ abstract class ServerPlugin {
   /// Compute the response that should be returned for the given [request], or
   /// `null` if the response has already been sent.
   Future<Response> _getResponse(Request request, int requestTime) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     ResponseResult result;
     switch (request.method) {
       case ANALYSIS_REQUEST_GET_NAVIGATION:
@@ -584,8 +575,6 @@ abstract class ServerPlugin {
   /// The method that is called when a [request] is received from the analysis
   /// server.
   Future<void> _onRequest(Request request) async {
-    // TODO(brianwilkerson) Determine whether this await is necessary.
-    await null;
     var requestTime = DateTime.now().millisecondsSinceEpoch;
     var id = request.id;
     Response response;
